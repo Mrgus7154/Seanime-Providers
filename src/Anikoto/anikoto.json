@@ -1,0 +1,12 @@
+{
+    "id": "anikoto",
+    "name": "Anikoto",
+    "description": "Anikoto online streaming source with sub/dub, multi-mirror failover and subtitle proxy support",
+    "manifestURI": "https://raw.githubusercontent.com/Mrgus7154/Seanime-Providers/main/src/Anikoto/anikoto.json",
+    "version": "2.0.0",
+    "author": "Mrgus",
+    "type": "onlinestream-provider",
+    "language": "typescript",
+    "lang": "en",
+    "payloadURI": "https://raw.githubusercontent.com/Mrgus7154/Seanime-Providers/main/src/Anikoto/anikoto.ts"
+}
