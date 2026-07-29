@@ -6,7 +6,7 @@ Online streaming providers for [Seanime](https://seanime.app).
 
 | Provider | Type | Install URL |
 |---|---|---|
-| AnimePahe | Online streaming | https://raw.githubusercontent.com/Mrgus7154/Seanime-Providers/main/src/AnimePahe/animepahe.json |
+| Anikoto | Online streaming | https://raw.githubusercontent.com/Mrgus7154/Seanime-Providers/main/src/Anikoto/anikoto.json |
 
 ## How to install
 
