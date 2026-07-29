@@ -1,9 +1,9 @@
 {
     "id": "anikoto",
     "name": "Anikoto",
-    "description": "Anikoto online streaming with sub/dub, multi-mirror latency ranked failover, parallel mirror racing, and subtitle proxy",
+    "description": "Anikoto online streaming with sub/dub, multi-mirror latency-ranked failover, parallel mirror racing, dub-aware subtitle track selection, and subtitle proxy",
     "manifestURI": "https://raw.githubusercontent.com/Mrgus7154/Seanime-Providers/main/src/Anikoto/anikoto.json",
-    "version": "2.1.0",
+    "version": "2.2.0",
     "author": "Mrgus",
     "type": "onlinestream-provider",
     "language": "typescript",
