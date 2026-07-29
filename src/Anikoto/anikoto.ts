@@ -770,7 +770,7 @@ class Provider {
         if (!got.file) throw "anikoto: could not resolve the player URL (source stream not found)"
         if (audio === "dub" && (await this.dubLooksWrong(got.tracks, got.origin))) throw "anikoto: dub source resolved to the subbed (Japanese) track"
 
-        const subtitles = await this.buildSubtitles(got.tracks, ctx, got.origin)
+        const subtitles = await this.buildSubtitles(got.tracks, { anilistId: ctx.anilistId, episode: ctx.episode, audio }, got.origin)
         return {
             server: serverName,
             headers: { Referer: `${got.origin}/`, Origin: got.origin },
@@ -1024,7 +1024,7 @@ class Provider {
 
     private async buildSubtitles(
         tracks: { file: string; label?: string; kind?: string; default?: boolean }[] | undefined,
-        ctx: { anilistId: number; episode: number },
+        ctx: { anilistId: number; episode: number; audio: string },
         embedOrigin?: string
     ): Promise<VideoSubtitle[]> {
         if (this.loadSubtitles === "disabled") return []
@@ -1056,36 +1056,70 @@ class Provider {
         for (const t of valid) labels.push(t.label || "English")
         const codes = await this.langCodes(labels)
 
-        const collected: VideoSubtitle[] = []
-        const seenLang: { [key: string]: boolean } = {}
-        let englishIdx = -1, defaultIdx = -1
+        type Entry = { sub: VideoSubtitle; lang: string; isSigns: boolean; srcDefault: boolean }
+        const entries: Entry[] = []
+        const seenUrls: { [key: string]: boolean } = {}
+        const SIGNS_RX = /\b(signs?|songs?|s&s|sdh|cc)\b/i
 
         for (let i = 0; i < valid.length; i++) {
             const t = valid[i]
-            const lang = codes[i]
-            if (seenLang[lang]) continue
-            seenLang[lang] = true
-            const idx = collected.length
             const fixed = this.fixTrackUrl(t.file)
+            if (seenUrls[fixed]) continue
+            seenUrls[fixed] = true
+
+            const lang = codes[i]
+            const rawLabel = t.label || (lang === "en" ? "English" : lang)
+            const isSigns = SIGNS_RX.test(rawLabel)
+            const displayLabel = isSigns && !/\b(signs?|songs?)\b/i.test(rawLabel)
+                ? `${rawLabel} (Signs)`
+                : rawLabel
             const url = useProxy && up
-                ? `${this.subEndpoint}/s/${ctx.anilistId}/${ctx.episode}/${lang}.${this.extOf(fixed)}?src=${encodeURIComponent(fixed)}${tokParam}${refParam}`
+                ? `${this.subEndpoint}/s/${ctx.anilistId}/${ctx.episode}/${lang}${isSigns ? "-signs" : ""}.${this.extOf(fixed)}?src=${encodeURIComponent(fixed)}${tokParam}${refParam}`
                 : fixed
-            collected.push({ id: `${lang}-${idx}`, url, language: t.label || "English", isDefault: false })
-            if (englishIdx === -1 && lang === "en") englishIdx = idx
-            if (defaultIdx === -1 && t.default === true) defaultIdx = idx
+            entries.push({
+                sub: {
+                    id: `${lang}${isSigns ? "-signs" : ""}-${entries.length}`,
+                    url,
+                    language: displayLabel,
+                    isDefault: false,
+                },
+                lang,
+                isSigns,
+                srcDefault: t.default === true,
+            })
         }
 
-        if (collected.length === 0) return collected
-        const pick = englishIdx !== -1 ? englishIdx : defaultIdx !== -1 ? defaultIdx : 0
-        collected[pick].isDefault = true
+        if (entries.length === 0) return []
 
+        const isDub = ctx.audio === "dub"
+        let defaultIdx = -1
+        for (let i = 0; i < entries.length; i++) {
+            const e = entries[i]
+            if (e.lang !== "en") continue
+            if (isDub && e.isSigns) { defaultIdx = i; break }
+            if (!isDub && !e.isSigns) { defaultIdx = i; break }
+        }
+        if (defaultIdx === -1) {
+            for (let i = 0; i < entries.length; i++) {
+                if (entries[i].lang === "en") { defaultIdx = i; break }
+            }
+        }
+        if (defaultIdx === -1) {
+            for (let i = 0; i < entries.length; i++) {
+                if (entries[i].srcDefault) { defaultIdx = i; break }
+            }
+        }
+        if (defaultIdx === -1) defaultIdx = 0
+        entries[defaultIdx].sub.isDefault = true
+
+        const collected = entries.map((e) => e.sub)
         if (useProxy && up) this.warmLanguages(collected, ctx)
         return collected.filter((s) => s.isDefault).concat(collected.filter((s) => !s.isDefault))
     }
 
-    private warmLanguages(subs: VideoSubtitle[], ctx: { anilistId: number; episode: number }): void {
+    private warmLanguages(subs: VideoSubtitle[], ctx: { anilistId: number; episode: number; audio: string }): void {
         if (subs.length <= 1 || ctx.anilistId <= 0) return
-        const key = `anikoto:lw:${ctx.anilistId}:${ctx.episode}`
+        const key = `anikoto:lw:${ctx.anilistId}:${ctx.episode}:${ctx.audio}`
         if (this.readCache<boolean>(key, this.TTL.server)) return
         this.writeCache(key, true)
         try {
