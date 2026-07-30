@@ -110,7 +110,7 @@ function init() {
         const savedColor = getStorageItem("dub-badge-color", "default");
         const savedDebug = getStorageItem("dub-badge-debug", "false");
         const savedCounter = getStorageItem("dub-badge-counter", "true");
-        const apiToken: string = (getStorageItem("dub-badge-as-token", "") || "").toString().trim();
+        let apiToken: string = (getStorageItem("dub-badge-as-token", "") || "").toString().trim();
 
         const langRef = ctx.fieldRef(savedLang);
         const confRef = ctx.fieldRef(savedConf);
@@ -118,6 +118,7 @@ function init() {
         const colRef = ctx.fieldRef(savedColor);
         const debugRef = ctx.fieldRef(savedDebug);
         const counterRef = ctx.fieldRef(savedCounter);
+        const tokenRef = ctx.fieldRef(apiToken);
         const statusState = ctx.state("Ready");
 
         let currentLoadedLang = "";
@@ -307,6 +308,8 @@ function init() {
                 tray.select("Badge Color", { options: COLOR_OPTIONS, fieldRef: colRef }),
                 tray.select("Show Episode Counter", { options: COUNTER_OPTIONS, fieldRef: counterRef }),
                 tray.select("Debug Mode (Show ID)", { options: DEBUG_OPTIONS, fieldRef: debugRef }),
+                tray.text("AnimeSchedule API Token (optional)", { style: { fontSize: "0.8rem", color: "#aaa", marginTop: "6px" } }),
+                tray.input({ fieldRef: tokenRef, placeholder: "Paste token or leave empty" }),
                 tray.text(`Status: ${statusState.get()}`, { style: { fontSize: "0.8rem", color: "#888", marginBottom: "5px" } }),
                 tray.button("Save & Reload", { onClick: "reload-data", intent: "primary", style: { width: "100%" } }),
                 tray.button("Clear Episode Cache", { onClick: "clear-ep-cache", intent: "warning-subtle", style: { width: "100%" } })
@@ -325,6 +328,8 @@ function init() {
         ctx.registerEventHandler("reload-data", async () => {
             const newLang = langRef.current;
             const newConf = confRef.current;
+            const newToken = (tokenRef.current || "").toString().trim();
+            const tokenChanged = newToken !== apiToken;
 
             setStorageItem("dub-badge-lang", newLang);
             setStorageItem("dub-badge-conf", newConf);
@@ -332,6 +337,16 @@ function init() {
             setStorageItem("dub-badge-color", colRef.current);
             setStorageItem("dub-badge-debug", debugRef.current);
             setStorageItem("dub-badge-counter", counterRef.current);
+            setStorageItem("dub-badge-as-token", newToken);
+            apiToken = newToken;
+
+            if (tokenChanged) {
+                for (const k of Object.keys(episodeCache)) {
+                    const e = episodeCache[k];
+                    if (e && e.stub) delete episodeCache[k];
+                }
+                setStorageItem("dub-badge-ep-cache-v1", episodeCache);
+            }
 
             await resetDomBadges();
 
