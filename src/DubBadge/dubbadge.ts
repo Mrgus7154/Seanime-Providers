@@ -118,7 +118,6 @@ function init() {
         const colRef = ctx.fieldRef(savedColor);
         const debugRef = ctx.fieldRef(savedDebug);
         const counterRef = ctx.fieldRef(savedCounter);
-        const tokenRef = ctx.fieldRef(apiToken);
         const statusState = ctx.state("Ready");
 
         let currentLoadedLang = "";
@@ -197,40 +196,71 @@ function init() {
             return null;
         };
 
+        const WEEK_MS = 7 * DAY_MS;
+
+        const getField = (obj: any, ...names: string[]): any => {
+            if (!obj) return null;
+            for (const n of names) {
+                if (obj[n] !== undefined && obj[n] !== null) return obj[n];
+            }
+            return null;
+        };
+
         const extractEpisodeInfo = (anime: any) => {
-            const rawStatus = (anime.status || anime.airType || anime.airingStatus || "").toString();
+            const rawStatus = (getField(anime, "status", "Status", "airType", "airingStatus") || "").toString();
+
             let totalEps: number | null = null;
-            if (typeof anime.episodes === "number" && anime.episodes > 0) totalEps = anime.episodes;
-            else if (typeof anime.episodeOverride === "number" && anime.episodeOverride > 0) totalEps = anime.episodeOverride;
-            else if (typeof anime.totalEpisodes === "number" && anime.totalEpisodes > 0) totalEps = anime.totalEpisodes;
-            else if (typeof anime.episodeCount === "number" && anime.episodeCount > 0) totalEps = anime.episodeCount;
-
-            let dubEps: number | null = null;
-            let subEps: number | null = null;
-
-            if (typeof anime.dubEpisodes === "number") dubEps = anime.dubEpisodes;
-            if (typeof anime.subEpisodes === "number") subEps = anime.subEpisodes;
-
-            if (anime.tracks && typeof anime.tracks === "object") {
-                const dt = anime.tracks.dub;
-                if (dt && typeof dt === "object" && dubEps === null) {
-                    if (typeof dt.latestEpisode === "number") dubEps = dt.latestEpisode;
-                    else if (typeof dt.subtractedEpisode === "number") dubEps = dt.subtractedEpisode;
-                    else if (typeof dt.episode === "number") dubEps = dt.episode;
-                    else if (typeof dt.episodes === "number") dubEps = dt.episodes;
-                }
-                const st = anime.tracks.sub;
-                if (st && typeof st === "object" && subEps === null) {
-                    if (typeof st.latestEpisode === "number") subEps = st.latestEpisode;
-                    else if (typeof st.subtractedEpisode === "number") subEps = st.subtractedEpisode;
-                    else if (typeof st.episode === "number") subEps = st.episode;
-                    else if (typeof st.episodes === "number") subEps = st.episodes;
-                }
+            const epsVal = getField(anime, "episodes", "Episodes", "totalEpisodes", "episodeCount");
+            if (typeof epsVal === "number" && epsVal > 0) totalEps = epsVal;
+            const epOverride = getField(anime, "episodeOverride", "EpisodeOverride");
+            if (epOverride && typeof epOverride === "object") {
+                const ov = getField(epOverride, "episodes", "count", "total", "value");
+                if (typeof ov === "number" && ov > 0) totalEps = ov;
             }
 
-            if (dubEps === null && anime.leadingTrack === "dub") {
-                if (typeof anime.latestEpisode === "number") dubEps = anime.latestEpisode;
-                else if (typeof anime.subtractedEpisode === "number") dubEps = anime.subtractedEpisode;
+            const now = Date.now();
+
+            const dubPremierTs = parseDateVal(getField(anime, "dubPremier", "DubPremier"));
+            const dubDelayedFromTs = parseDateVal(getField(anime, "dubDelayedFrom", "DubDelayedFrom"));
+            const dubDelayedUntilTs = parseDateVal(getField(anime, "dubDelayedUntil", "DubDelayedUntil"));
+
+            let dubEps: number | null = null;
+            if (dubPremierTs) {
+                if (now < dubPremierTs) {
+                    dubEps = 0;
+                } else {
+                    let weeks = Math.floor((now - dubPremierTs) / WEEK_MS) + 1;
+                    if (dubDelayedFromTs && dubDelayedUntilTs && dubDelayedUntilTs > dubDelayedFromTs) {
+                        const delayWeeks = Math.floor((dubDelayedUntilTs - dubDelayedFromTs) / WEEK_MS);
+                        weeks = Math.max(0, weeks - delayWeeks);
+                    }
+                    if (totalEps !== null) weeks = Math.min(weeks, totalEps);
+                    dubEps = Math.max(0, weeks);
+                }
+            }
+            const dubOverride = getField(anime, "dubEpisodeOverride", "DubEpisodeOverride");
+            if (dubOverride && typeof dubOverride === "object") {
+                const ov = getField(dubOverride, "episodes", "count", "total", "value");
+                if (typeof ov === "number") dubEps = ov;
+            }
+
+            const subPremierTs = parseDateVal(getField(anime, "subPremier", "SubPremier"));
+            const premierTs = parseDateVal(getField(anime, "premier", "Premier"));
+            let subEps: number | null = null;
+            const subStart = subPremierTs || premierTs;
+            if (subStart) {
+                if (now < subStart) {
+                    subEps = 0;
+                } else {
+                    let weeks = Math.floor((now - subStart) / WEEK_MS) + 1;
+                    if (totalEps !== null) weeks = Math.min(weeks, totalEps);
+                    subEps = Math.max(0, weeks);
+                }
+            }
+            const subOverride = getField(anime, "subEpisodeOverride", "SubEpisodeOverride");
+            if (subOverride && typeof subOverride === "object") {
+                const ov = getField(subOverride, "episodes", "count", "total", "value");
+                if (typeof ov === "number") subEps = ov;
             }
 
             const finishedAt = parseFinishedAt(anime);
@@ -308,8 +338,6 @@ function init() {
                 tray.select("Badge Color", { options: COLOR_OPTIONS, fieldRef: colRef }),
                 tray.select("Show Episode Counter", { options: COUNTER_OPTIONS, fieldRef: counterRef }),
                 tray.select("Debug Mode (Show ID)", { options: DEBUG_OPTIONS, fieldRef: debugRef }),
-                tray.text("AnimeSchedule API Token (optional)", { style: { fontSize: "0.8rem", color: "#aaa", marginTop: "6px" } }),
-                tray.input({ fieldRef: tokenRef, placeholder: "Paste token or leave empty" }),
                 tray.text(`Status: ${statusState.get()}`, { style: { fontSize: "0.8rem", color: "#888", marginBottom: "5px" } }),
                 tray.button("Save & Reload", { onClick: "reload-data", intent: "primary", style: { width: "100%" } }),
                 tray.button("Clear Episode Cache", { onClick: "clear-ep-cache", intent: "warning-subtle", style: { width: "100%" } })
@@ -328,8 +356,6 @@ function init() {
         ctx.registerEventHandler("reload-data", async () => {
             const newLang = langRef.current;
             const newConf = confRef.current;
-            const newToken = (tokenRef.current || "").toString().trim();
-            const tokenChanged = newToken !== apiToken;
 
             setStorageItem("dub-badge-lang", newLang);
             setStorageItem("dub-badge-conf", newConf);
@@ -337,16 +363,6 @@ function init() {
             setStorageItem("dub-badge-color", colRef.current);
             setStorageItem("dub-badge-debug", debugRef.current);
             setStorageItem("dub-badge-counter", counterRef.current);
-            setStorageItem("dub-badge-as-token", newToken);
-            apiToken = newToken;
-
-            if (tokenChanged) {
-                for (const k of Object.keys(episodeCache)) {
-                    const e = episodeCache[k];
-                    if (e && e.stub) delete episodeCache[k];
-                }
-                setStorageItem("dub-badge-ep-cache-v1", episodeCache);
-            }
 
             await resetDomBadges();
 
