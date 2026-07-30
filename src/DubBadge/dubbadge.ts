@@ -69,6 +69,7 @@ function init() {
         const ONGOING_TTL = DAY_MS;
         const RECENT_FINISHED_TTL = 3 * DAY_MS;
         const FETCH_TIMEOUT_MS = 6000;
+        const TIMETABLE_TTL_MS = 6 * 60 * 60 * 1000;
 
         const getStorageItem = (key: string, def: any) => {
             try {
@@ -133,6 +134,10 @@ function init() {
         let pendingPersist = false;
         let persistTimer: any = null;
 
+        let timetableByRoute: Record<string, any> = {};
+        let timetableLoaded = false;
+        let timetableLastLoad = 0;
+
         const persistCache = () => {
             if (pendingPersist) return;
             pendingPersist = true;
@@ -177,27 +182,6 @@ function init() {
             return null;
         };
 
-        const parseFinishedAt = (anime: any): number | null => {
-            const candidates = [
-                anime.dubPremier,
-                anime.subPremier,
-                anime.endDate,
-                anime.premier?.endDate,
-                anime.aired?.to,
-                anime.airedTo,
-                anime.finishedAiringDate,
-                anime.tracks?.dub?.endDate,
-                anime.tracks?.sub?.endDate,
-            ];
-            for (const c of candidates) {
-                const t = parseDateVal(c);
-                if (t) return t;
-            }
-            return null;
-        };
-
-        const WEEK_MS = 7 * DAY_MS;
-
         const getField = (obj: any, ...names: string[]): any => {
             if (!obj) return null;
             for (const n of names) {
@@ -206,8 +190,25 @@ function init() {
             return null;
         };
 
+        const parseFinishedAt = (anime: any): number | null => {
+            const candidates = [
+                getField(anime, "dubPremier", "DubPremier"),
+                getField(anime, "subPremier", "SubPremier"),
+                getField(anime, "endDate", "EndDate"),
+                getField(anime, "premier", "Premier")?.endDate,
+                getField(anime, "aired", "Aired")?.to,
+                getField(anime, "airedTo", "AiredTo"),
+                getField(anime, "finishedAiringDate", "FinishedAiringDate"),
+            ];
+            for (const c of candidates) {
+                const t = parseDateVal(c);
+                if (t) return t;
+            }
+            return null;
+        };
+
         const extractEpisodeInfo = (anime: any) => {
-            const rawStatus = (getField(anime, "status", "Status", "airType", "airingStatus") || "").toString();
+            const rawStatus = (getField(anime, "status", "Status", "airType", "AirType", "airingStatus", "AiringStatus") || "").toString();
 
             let totalEps: number | null = null;
             const epsVal = getField(anime, "episodes", "Episodes", "totalEpisodes", "episodeCount");
@@ -218,55 +219,17 @@ function init() {
                 if (typeof ov === "number" && ov > 0) totalEps = ov;
             }
 
-            const now = Date.now();
-
-            const dubPremierTs = parseDateVal(getField(anime, "dubPremier", "DubPremier"));
-            const dubDelayedFromTs = parseDateVal(getField(anime, "dubDelayedFrom", "DubDelayedFrom"));
-            const dubDelayedUntilTs = parseDateVal(getField(anime, "dubDelayedUntil", "DubDelayedUntil"));
-
-            let dubEps: number | null = null;
-            if (dubPremierTs) {
-                if (now < dubPremierTs) {
-                    dubEps = 0;
-                } else {
-                    let weeks = Math.floor((now - dubPremierTs) / WEEK_MS) + 1;
-                    if (dubDelayedFromTs && dubDelayedUntilTs && dubDelayedUntilTs > dubDelayedFromTs) {
-                        const delayWeeks = Math.floor((dubDelayedUntilTs - dubDelayedFromTs) / WEEK_MS);
-                        weeks = Math.max(0, weeks - delayWeeks);
-                    }
-                    if (totalEps !== null) weeks = Math.min(weeks, totalEps);
-                    dubEps = Math.max(0, weeks);
-                }
-            }
-            const dubOverride = getField(anime, "dubEpisodeOverride", "DubEpisodeOverride");
-            if (dubOverride && typeof dubOverride === "object") {
-                const ov = getField(dubOverride, "episodes", "count", "total", "value");
-                if (typeof ov === "number") dubEps = ov;
+            let dubOverride: number | null = null;
+            const dubOv = getField(anime, "dubEpisodeOverride", "DubEpisodeOverride");
+            if (dubOv && typeof dubOv === "object") {
+                const ov = getField(dubOv, "episodes", "count", "total", "value");
+                if (typeof ov === "number") dubOverride = ov;
             }
 
-            const subPremierTs = parseDateVal(getField(anime, "subPremier", "SubPremier"));
-            const premierTs = parseDateVal(getField(anime, "premier", "Premier"));
-            let subEps: number | null = null;
-            const subStart = subPremierTs || premierTs;
-            if (subStart) {
-                if (now < subStart) {
-                    subEps = 0;
-                } else {
-                    let weeks = Math.floor((now - subStart) / WEEK_MS) + 1;
-                    if (totalEps !== null) weeks = Math.min(weeks, totalEps);
-                    subEps = Math.max(0, weeks);
-                }
-            }
-            const subOverride = getField(anime, "subEpisodeOverride", "SubEpisodeOverride");
-            if (subOverride && typeof subOverride === "object") {
-                const ov = getField(subOverride, "episodes", "count", "total", "value");
-                if (typeof ov === "number") subEps = ov;
-            }
-
+            const route = getField(anime, "route", "Route");
             const finishedAt = parseFinishedAt(anime);
-            const fullyDubbed = (totalEps !== null && dubEps !== null && totalEps > 0 && dubEps >= totalEps);
 
-            return { status: rawStatus, totalEps, subEps, dubEps, finishedAt, fullyDubbed };
+            return { status: rawStatus, totalEps, finishedAt, route, dubOverride };
         };
 
         const fetchAnimeScheduleByMal = async (malId: number) => {
@@ -291,6 +254,58 @@ function init() {
             }
         };
 
+        const fetchTimetableDub = async (): Promise<Record<string, any>> => {
+            try {
+                const headers: Record<string, string> = { "Accept": "application/json" };
+                if (apiToken) headers["Authorization"] = `Bearer ${apiToken}`;
+                const url = "https://animeschedule.net/api/v3/timetables/dub";
+                const res = await ctx.fetch(url, { headers });
+                if (!res || res.status !== 200) return {};
+                const data = await res.json();
+                const list: any[] = Array.isArray(data) ? data : (Array.isArray(data?.timetable) ? data.timetable : (Array.isArray(data?.timetables) ? data.timetables : []));
+                const map: Record<string, any> = {};
+                const now = Date.now();
+                for (const item of list) {
+                    const route = getField(item, "route", "Route");
+                    if (!route) continue;
+                    const epNumRaw = getField(item, "episodeNumber", "EpisodeNumber");
+                    const subEpNumRaw = getField(item, "subtractedEpisodeNumber", "SubtractedEpisodeNumber");
+                    const totalEpsRaw = getField(item, "episodes", "Episodes");
+                    const epDateRaw = getField(item, "episodeDate", "EpisodeDate");
+                    const epDate = parseDateVal(epDateRaw);
+                    const aired = epDate ? epDate <= now : true;
+                    const epNum = typeof epNumRaw === "number" ? epNumRaw : null;
+                    const subEpNum = typeof subEpNumRaw === "number" ? subEpNumRaw : null;
+                    let dubEps: number | null = null;
+                    if (epNum !== null) {
+                        if (aired) {
+                            dubEps = epNum;
+                        } else {
+                            dubEps = subEpNum !== null ? subEpNum - 1 : epNum - 1;
+                        }
+                        if (dubEps < 0) dubEps = 0;
+                    }
+                    const totalEps = (typeof totalEpsRaw === "number" && totalEpsRaw > 0) ? totalEpsRaw : null;
+                    const existing = map[route];
+                    if (!existing || (dubEps !== null && (existing.episodeNumber === null || dubEps > existing.episodeNumber))) {
+                        map[route] = { episodeNumber: dubEps, totalEps };
+                    }
+                }
+                return map;
+            } catch (e) {
+                return {};
+            }
+        };
+
+        const loadTimetableData = async () => {
+            const fresh = await fetchTimetableDub();
+            if (fresh && Object.keys(fresh).length > 0) {
+                timetableByRoute = fresh;
+                timetableLoaded = true;
+                timetableLastLoad = Date.now();
+            }
+        };
+
         const getOrFetchEpisodeData = async (anilistId: string): Promise<any> => {
             const cached = episodeCache[anilistId];
             if (cached && !shouldRefetch(cached)) return cached;
@@ -306,15 +321,38 @@ function init() {
                         persistCache();
                         return cached;
                     }
-                    const stub = { status: "", totalEps: null, subEps: null, dubEps: null, finishedAt: null, fullyDubbed: false, malId, lastCheck: Date.now(), stub: true };
+                    const stub = { status: "", totalEps: null, dubEps: null, finishedAt: null, route: null, fullyDubbed: false, malId, lastCheck: Date.now(), stub: true };
                     episodeCache[anilistId] = stub;
                     persistCache();
                     return stub;
                 }
-                const entry: any = { ...data, malId, lastCheck: Date.now() };
-                if (entry.finishedAt && (Date.now() - entry.finishedAt > TWO_MONTHS_MS)) {
-                    entry.fullyDubbed = true;
+
+                const routeInfo = data.route ? timetableByRoute[data.route] : null;
+                let dubEps: number | null = routeInfo && typeof routeInfo.episodeNumber === "number" ? routeInfo.episodeNumber : null;
+                if (typeof data.dubOverride === "number") dubEps = data.dubOverride;
+
+                let totalEps = data.totalEps;
+                if ((totalEps === null || totalEps === undefined) && routeInfo && typeof routeInfo.totalEps === "number") {
+                    totalEps = routeInfo.totalEps;
                 }
+
+                let fullyDubbed = false;
+                if (totalEps !== null && totalEps !== undefined && dubEps !== null && totalEps > 0 && dubEps >= totalEps) {
+                    fullyDubbed = true;
+                } else if (data.finishedAt && (Date.now() - data.finishedAt > TWO_MONTHS_MS)) {
+                    fullyDubbed = true;
+                }
+
+                const entry: any = {
+                    status: data.status,
+                    totalEps: totalEps !== undefined ? totalEps : null,
+                    dubEps,
+                    finishedAt: data.finishedAt,
+                    route: data.route,
+                    fullyDubbed,
+                    malId,
+                    lastCheck: Date.now()
+                };
                 episodeCache[anilistId] = entry;
                 persistCache();
                 return entry;
@@ -365,6 +403,10 @@ function init() {
             setStorageItem("dub-badge-counter", counterRef.current);
 
             await resetDomBadges();
+
+            if (!timetableLoaded || (Date.now() - timetableLastLoad > TIMETABLE_TTL_MS)) {
+                await loadTimetableData();
+            }
 
             if (newLang !== currentLoadedLang || newConf !== currentLoadedConf || !isDataReady) {
                 await loadDubData();
@@ -458,7 +500,15 @@ function init() {
             }
         };
 
-        loadDubData();
+        const initAll = async () => {
+            await loadTimetableData();
+            await loadDubData();
+        };
+        initAll();
+
+        ctx.setInterval(async () => {
+            await loadTimetableData();
+        }, TIMETABLE_TTL_MS);
 
         const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> => {
             return new Promise((resolve) => {
