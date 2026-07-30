@@ -121,6 +121,12 @@ function init() {
         const counterRef = ctx.fieldRef(savedCounter);
         const statusState = ctx.state("Ready");
 
+        const debugLog = (...args: any[]) => {
+            if ((debugRef.current || savedDebug) === "true") {
+                try { console.log("[DubBadge]", ...args); } catch (e) {}
+            }
+        };
+
         let currentLoadedLang = "";
         let currentLoadedConf = "";
 
@@ -238,7 +244,16 @@ function init() {
                 if (apiToken) headers["Authorization"] = `Bearer ${apiToken}`;
                 const url = `https://animeschedule.net/api/v3/anime?mal-ids=${malId}`;
                 const res = await ctx.fetch(url, { headers });
-                if (!res || res.status !== 200) return null;
+                if (!res) {
+                    debugLog("anime fetch no response", malId);
+                    return null;
+                }
+                if (res.status !== 200) {
+                    let body = "";
+                    try { body = await res.text(); } catch (e) {}
+                    debugLog("anime fetch failed", malId, res.status, body.slice(0, 300));
+                    return null;
+                }
                 const data = await res.json();
                 let anime: any = null;
                 if (Array.isArray(data)) anime = data[0];
@@ -247,9 +262,15 @@ function init() {
                 else if (data && Array.isArray(data.results)) anime = data.results[0];
                 else if (data && data.route) anime = data;
                 else if (data && (data.title || data.name)) anime = data;
-                if (!anime) return null;
-                return extractEpisodeInfo(anime);
-            } catch (e) {
+                if (!anime) {
+                    debugLog("anime fetch no anime entry", malId, JSON.stringify(data).slice(0, 300));
+                    return null;
+                }
+                const info = extractEpisodeInfo(anime);
+                debugLog("anime fetch ok", malId, "route:", info.route, "totalEps:", info.totalEps, "status:", info.status);
+                return info;
+            } catch (e: any) {
+                debugLog("anime fetch exception", malId, e?.message || String(e));
                 return null;
             }
         };
@@ -260,9 +281,21 @@ function init() {
                 if (apiToken) headers["Authorization"] = `Bearer ${apiToken}`;
                 const url = "https://animeschedule.net/api/v3/timetables/dub";
                 const res = await ctx.fetch(url, { headers });
-                if (!res || res.status !== 200) return {};
+                if (!res) {
+                    debugLog("timetable fetch no response");
+                    return {};
+                }
+                if (res.status !== 200) {
+                    let body = "";
+                    try { body = await res.text(); } catch (e) {}
+                    debugLog("timetable fetch failed", res.status, body.slice(0, 500));
+                    return {};
+                }
                 const data = await res.json();
-                const list: any[] = Array.isArray(data) ? data : (Array.isArray(data?.timetable) ? data.timetable : (Array.isArray(data?.timetables) ? data.timetables : []));
+                const list: any[] = Array.isArray(data) ? data : (Array.isArray(data?.timetable) ? data.timetable : (Array.isArray(data?.timetables) ? data.timetables : (Array.isArray(data?.data) ? data.data : [])));
+                if (list.length === 0) {
+                    debugLog("timetable fetch parsed 0 entries, raw keys:", data && typeof data === "object" ? Object.keys(data).join(",") : typeof data);
+                }
                 const map: Record<string, any> = {};
                 const now = Date.now();
                 for (const item of list) {
@@ -291,8 +324,10 @@ function init() {
                         map[route] = { episodeNumber: dubEps, totalEps };
                     }
                 }
+                debugLog("timetable fetch ok, routes:", Object.keys(map).length);
                 return map;
-            } catch (e) {
+            } catch (e: any) {
+                debugLog("timetable fetch exception", e?.message || String(e));
                 return {};
             }
         };
@@ -304,6 +339,7 @@ function init() {
                 timetableLoaded = true;
                 timetableLastLoad = Date.now();
             }
+            statusState.set(`Active: ${currentLoadedLang || "-"} (${dubbedAnilistIds.size}) | TT:${Object.keys(timetableByRoute).length}`);
         };
 
         const getOrFetchEpisodeData = async (anilistId: string): Promise<any> => {
@@ -353,6 +389,7 @@ function init() {
                     malId,
                     lastCheck: Date.now()
                 };
+                debugLog("episode resolved", anilistId, "malId:", malId, "route:", data.route, "routeInTimetable:", !!routeInfo, "dubEps:", dubEps, "totalEps:", entry.totalEps, "fullyDubbed:", fullyDubbed);
                 episodeCache[anilistId] = entry;
                 persistCache();
                 return entry;
@@ -473,7 +510,7 @@ function init() {
                 currentLoadedLang = lang;
                 currentLoadedConf = conf;
                 isDataReady = true;
-                statusState.set(`Active: ${lang} (${dubbedAnilistIds.size})`);
+                statusState.set(`Active: ${lang} (${dubbedAnilistIds.size}) | TT:${Object.keys(timetableByRoute).length}`);
 
                 triggerScan();
             } catch (e) {
