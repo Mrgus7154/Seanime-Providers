@@ -70,6 +70,7 @@ function init() {
         const RECENT_FINISHED_TTL = 3 * DAY_MS;
         const FETCH_TIMEOUT_MS = 6000;
         const TIMETABLE_TTL_MS = 6 * 60 * 60 * 1000;
+        const WEEK_MS = 7 * DAY_MS;
 
         const getStorageItem = (key: string, def: any) => {
             try {
@@ -119,6 +120,7 @@ function init() {
         const colRef = ctx.fieldRef(savedColor);
         const debugRef = ctx.fieldRef(savedDebug);
         const counterRef = ctx.fieldRef(savedCounter);
+        const tokenRef = ctx.fieldRef(apiToken);
         const statusState = ctx.state("Ready");
 
         const debugLog = (...args: any[]) => {
@@ -143,6 +145,28 @@ function init() {
         let timetableByRoute: Record<string, any> = {};
         let timetableLoaded = false;
         let timetableLastLoad = 0;
+
+        let activeAnimeFetches = 0;
+        const MAX_CONCURRENT_ANIME_FETCHES = 3;
+        const animeFetchQueue: Array<() => void> = [];
+        const acquireAnimeFetchSlot = (): Promise<void> => {
+            return new Promise((resolve) => {
+                const tryAcquire = () => {
+                    if (activeAnimeFetches < MAX_CONCURRENT_ANIME_FETCHES) {
+                        activeAnimeFetches++;
+                        resolve();
+                    } else {
+                        animeFetchQueue.push(tryAcquire);
+                    }
+                };
+                tryAcquire();
+            });
+        };
+        const releaseAnimeFetchSlot = () => {
+            activeAnimeFetches--;
+            const next = animeFetchQueue.shift();
+            if (next) setTimeout(next, 120);
+        };
 
         const persistCache = () => {
             if (pendingPersist) return;
@@ -235,10 +259,30 @@ function init() {
             const route = getField(anime, "route", "Route");
             const finishedAt = parseFinishedAt(anime);
 
-            return { status: rawStatus, totalEps, finishedAt, route, dubOverride };
+            const dubPremierTs = parseDateVal(getField(anime, "dubPremier", "DubPremier"));
+            const dubDelayedFromTs = parseDateVal(getField(anime, "dubDelayedFrom", "DubDelayedFrom"));
+            const dubDelayedUntilTs = parseDateVal(getField(anime, "dubDelayedUntil", "DubDelayedUntil"));
+            let fallbackDubEps: number | null = null;
+            if (dubPremierTs) {
+                const now = Date.now();
+                if (now < dubPremierTs) {
+                    fallbackDubEps = 0;
+                } else {
+                    let weeks = Math.floor((now - dubPremierTs) / WEEK_MS) + 1;
+                    if (dubDelayedFromTs && dubDelayedUntilTs && dubDelayedUntilTs > dubDelayedFromTs) {
+                        const delayWeeks = Math.floor((dubDelayedUntilTs - dubDelayedFromTs) / WEEK_MS);
+                        weeks = Math.max(0, weeks - delayWeeks);
+                    }
+                    if (totalEps !== null) weeks = Math.min(weeks, totalEps);
+                    fallbackDubEps = Math.max(0, weeks);
+                }
+            }
+
+            return { status: rawStatus, totalEps, finishedAt, route, dubOverride, fallbackDubEps };
         };
 
         const fetchAnimeScheduleByMal = async (malId: number) => {
+            await acquireAnimeFetchSlot();
             try {
                 const headers: Record<string, string> = { "Accept": "application/json" };
                 if (apiToken) headers["Authorization"] = `Bearer ${apiToken}`;
@@ -246,6 +290,10 @@ function init() {
                 const res = await ctx.fetch(url, { headers });
                 if (!res) {
                     debugLog("anime fetch no response", malId);
+                    return null;
+                }
+                if (res.status === 429) {
+                    debugLog("anime fetch rate limited, will retry on next scan", malId);
                     return null;
                 }
                 if (res.status !== 200) {
@@ -272,6 +320,8 @@ function init() {
             } catch (e: any) {
                 debugLog("anime fetch exception", malId, e?.message || String(e));
                 return null;
+            } finally {
+                releaseAnimeFetchSlot();
             }
         };
 
@@ -339,7 +389,7 @@ function init() {
                 timetableLoaded = true;
                 timetableLastLoad = Date.now();
             }
-            statusState.set(`Active: ${currentLoadedLang || "-"} (${dubbedAnilistIds.size}) | TT:${Object.keys(timetableByRoute).length}`);
+            statusState.set(`Active: ${currentLoadedLang || "-"} (${dubbedAnilistIds.size}) | TT:${Object.keys(timetableByRoute).length}${timetableLoaded ? "" : " (no token, using estimate)"}`);
         };
 
         const getOrFetchEpisodeData = async (anilistId: string): Promise<any> => {
@@ -365,6 +415,7 @@ function init() {
 
                 const routeInfo = data.route ? timetableByRoute[data.route] : null;
                 let dubEps: number | null = routeInfo && typeof routeInfo.episodeNumber === "number" ? routeInfo.episodeNumber : null;
+                if (dubEps === null && typeof data.fallbackDubEps === "number") dubEps = data.fallbackDubEps;
                 if (typeof data.dubOverride === "number") dubEps = data.dubOverride;
 
                 let totalEps = data.totalEps;
@@ -413,6 +464,7 @@ function init() {
                 tray.select("Badge Color", { options: COLOR_OPTIONS, fieldRef: colRef }),
                 tray.select("Show Episode Counter", { options: COUNTER_OPTIONS, fieldRef: counterRef }),
                 tray.select("Debug Mode (Show ID)", { options: DEBUG_OPTIONS, fieldRef: debugRef }),
+                tray.input("AnimeSchedule API Token (optional)", { fieldRef: tokenRef, placeholder: "Leave blank to use estimated counts", type: "password" }),
                 tray.text(`Status: ${statusState.get()}`, { style: { fontSize: "0.8rem", color: "#888", marginBottom: "5px" } }),
                 tray.button("Save & Reload", { onClick: "reload-data", intent: "primary", style: { width: "100%" } }),
                 tray.button("Clear Episode Cache", { onClick: "clear-ep-cache", intent: "warning-subtle", style: { width: "100%" } })
@@ -431,6 +483,8 @@ function init() {
         ctx.registerEventHandler("reload-data", async () => {
             const newLang = langRef.current;
             const newConf = confRef.current;
+            const newToken = (tokenRef.current || "").toString().trim();
+            const tokenChanged = newToken !== apiToken;
 
             setStorageItem("dub-badge-lang", newLang);
             setStorageItem("dub-badge-conf", newConf);
@@ -438,10 +492,12 @@ function init() {
             setStorageItem("dub-badge-color", colRef.current);
             setStorageItem("dub-badge-debug", debugRef.current);
             setStorageItem("dub-badge-counter", counterRef.current);
+            setStorageItem("dub-badge-as-token", newToken);
+            apiToken = newToken;
 
             await resetDomBadges();
 
-            if (!timetableLoaded || (Date.now() - timetableLastLoad > TIMETABLE_TTL_MS)) {
+            if (tokenChanged || !timetableLoaded || (Date.now() - timetableLastLoad > TIMETABLE_TTL_MS)) {
                 await loadTimetableData();
             }
 
@@ -510,7 +566,7 @@ function init() {
                 currentLoadedLang = lang;
                 currentLoadedConf = conf;
                 isDataReady = true;
-                statusState.set(`Active: ${lang} (${dubbedAnilistIds.size}) | TT:${Object.keys(timetableByRoute).length}`);
+                statusState.set(`Active: ${lang} (${dubbedAnilistIds.size}) | TT:${Object.keys(timetableByRoute).length}${timetableLoaded ? "" : " (no token, using estimate)"}`);
 
                 triggerScan();
             } catch (e) {
