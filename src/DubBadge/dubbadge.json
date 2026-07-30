@@ -3,7 +3,7 @@
     "name": "Dub Badge",
     "description": "Overlays dub availability badges on anime cards using MyDubList, with live per-episode dub counts from AnimeSchedule for currently-airing English dubs. Caches fully-dubbed titles so airing shows are checked but completed ones are not.",
     "manifestURI": "https://raw.githubusercontent.com/Mrgus7154/Seanime-Providers/main/src/DubBadge/dubbadge.json",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "author": "Mrgus",
     "type": "plugin",
     "language": "typescript",
