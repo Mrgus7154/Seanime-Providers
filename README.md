@@ -7,7 +7,7 @@ Online streaming providers and plugins for [Seanime](https://seanime.app).
 | Extension | Type | Install URL |
 |---|---|---|
 | Anikoto | Online streaming | https://raw.githubusercontent.com/Mrgus7154/Seanime-Providers/main/src/Anikoto/anikoto.json |
-| Dub Badge | Plugin | https://raw.githubusercontent.com/Mrgus7154/Seanime-Providers/main/src/DubBadge/dubbadge.json |
+| Dub Badge | Plugin | https://raw.githubusercontent.com/Mrgus7154/Seanime-Providers/refs/heads/main/src/DubBadge/dubbadge.json |
 
 ## How to install
 
